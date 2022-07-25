@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "",
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "includePath": [
+                "/home/zk/robot/carto_ws/devel/include/**",
+                "/home/zk/robot/tf_ws/devel/include/**",
+                "/opt/ros/melodic/include/**",
+                "/home/zk/robot/tf_ws/src/forward_demo/include/**",
+                "/home/zk/robot/kinect_ws/src/iai_kinect2/kinect2_bridge/include/**",
+                "/home/zk/robot/kinect_ws/src/iai_kinect2/kinect2_calibration/include/**",
+                "/home/zk/robot/kinect_ws/src/iai_kinect2/kinect2_registration/include/**",
+                "/home/zk/robot/tf_ws/src/laserscan_pointcloud/include/**",
+                "/home/zk/robot/tf_ws/src/learning_tf/include/**",
+                "/home/zk/robot/tf_ws/src/localization_zk/include/**",
+                "/home/zk/robot/tf_ws/src/rotate_demo/include/**",
+                "/home/zk/robot/tf_ws/src/service_demo/include/**",
+                "/home/zk/robot/tf_ws/src/service_test/include/**",
+                "/usr/include/**"
+            ],
+            "name": "ROS",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++14"
+        }
+    ],
+    "version": 4
+}
