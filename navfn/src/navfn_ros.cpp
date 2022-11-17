@@ -195,6 +195,7 @@ namespace navfn {
     return makePlan(start, goal, default_tolerance_, plan);
   }
 
+  //全局路径规划器的规划接口，该函数实现全局路径规划。
   bool NavfnROS::makePlan(const geometry_msgs::PoseStamped& start, 
       const geometry_msgs::PoseStamped& goal, double tolerance, std::vector<geometry_msgs::PoseStamped>& plan){
     boost::mutex::scoped_lock lock(mutex_);
@@ -260,6 +261,7 @@ namespace navfn {
     planner_->setStart(map_goal);
     planner_->setGoal(map_start);
 
+    //该函数完成全局路径的计算
     //bool success = planner_->calcNavFnAstar();
     planner_->calcNavFnDijkstra(true);
 
@@ -270,11 +272,15 @@ namespace navfn {
     bool found_legal = false;
     double best_sdist = DBL_MAX;
 
+    //在目标位置附近2*tolerance的矩形范围内，寻找与目标位置最近的、且不是障碍物的cell;
+    //该目标点作为全局路径的实际终点，这里调用了类内的getPointPotential函数
+    //目的是获取单点的Potential值，与DBL_MAX进行比较，确定是否是障碍物。
     p.pose.position.y = goal.pose.position.y - tolerance;
 
     while(p.pose.position.y <= goal.pose.position.y + tolerance){
       p.pose.position.x = goal.pose.position.x - tolerance;
       while(p.pose.position.x <= goal.pose.position.x + tolerance){
+        //getPointPotential()函数，返回potarr数组记录中对应cell的potential值。
         double potential = getPointPotential(p.pose.position);
         double sdist = sq_distance(p, goal);
         if(potential < POT_HIGH && sdist < best_sdist){
@@ -287,8 +293,10 @@ namespace navfn {
       p.pose.position.y += resolution;
     }
 
+    //若成功找到实际终点best_pose，调用类内getPlanFromPotential函数，将best_pose传递给NavFn，最终获得Plan并发布
     if(found_legal){
       //extract the plan
+      //主要调用NavFn中的一些函数，设置目标，获取规划结果。
       if(getPlanFromPotential(best_pose, plan)){
         //make sure the goal we push on has the same timestamp as the rest of the plan
         geometry_msgs::PoseStamped goal_copy = best_pose;

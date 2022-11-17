@@ -186,7 +186,7 @@ namespace navfn {
     }
 
   //
-  // Set/Reset map size
+  // Set/Reset map size,costarr数组用于记录全局costmap信息
   //
 
   void
@@ -224,6 +224,7 @@ namespace navfn {
   // set up cost array, usually from ROS
   //
 
+  //setCostmap将代价地图转换成加权无向图,代价地图costmap取值范围为0~255.
   void
     NavFn::setCostmap(const COSTTYPE *cmap, bool isROS, bool allow_unknown)
     {
@@ -289,12 +290,15 @@ namespace navfn {
   bool
     NavFn::calcNavFnDijkstra(bool atStart)
     {
+      //该函数通过costarr初步设置potarr，其中potarr是计算路径的基础。
       setupNavFn(true);
 
       // calculate the nav fn and path
+      //通过传播，完成对potayy成员更新
       propNavFnDijkstra(std::max(nx*ny/20,nx+ny),atStart);
 
       // path
+      //调用calcPath函数，由更新完毕的potarr计算x、y向的梯度，最终得出规划路径点集。
       int len = calcPath(nx*ny/2);
 
       if (len > 0)			// found plan
