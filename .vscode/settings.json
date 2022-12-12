@@ -3,5 +3,22 @@
         "/home/zk/robot/carto_ws/devel/lib/python2.7/dist-packages",
         "/home/zk/robot/tf_ws/devel/lib/python2.7/dist-packages",
         "/opt/ros/melodic/lib/python2.7/dist-packages"
-    ]
+    ],
+    "files.associations": {
+        "condition_variable": "cpp",
+        "*.ipp": "cpp",
+        "*.tcc": "cpp",
+        "fstream": "cpp",
+        "mutex": "cpp",
+        "ostream": "cpp",
+        "random": "cpp",
+        "unordered_map": "cpp",
+        "deque": "cpp",
+        "list": "cpp",
+        "string": "cpp",
+        "vector": "cpp",
+        "hash_map": "cpp",
+        "functional": "cpp",
+        "cstdlib": "cpp"
+    }
 }

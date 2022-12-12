@@ -84,7 +84,8 @@ namespace base_local_planner {
       //initialize the planner
       initialize(name, tf, costmap_ros);
   }
-
+  
+  //初始化本地规划器
   void TrajectoryPlannerROS::initialize(
       std::string name,
       tf2_ros::Buffer* tf,
@@ -112,18 +113,19 @@ namespace base_local_planner {
       rotating_to_goal_ = false;
 
       //initialize the copy of the costmap the controller will use
+      //复制一个代价地图供本地规划器使用
       costmap_ = costmap_ros_->getCostmap();
-
-
+      //地图坐标系
       global_frame_ = costmap_ros_->getGlobalFrameID();
+      //机器人底盘坐标系
       robot_base_frame_ = costmap_ros_->getBaseFrameID();
       private_nh.param("prune_plan", prune_plan_, true);
 
-      private_nh.param("yaw_goal_tolerance", yaw_goal_tolerance_, 0.05);
-      private_nh.param("xy_goal_tolerance", xy_goal_tolerance_, 0.10);
-      private_nh.param("acc_lim_x", acc_lim_x_, 2.5);
-      private_nh.param("acc_lim_y", acc_lim_y_, 2.5);
-      private_nh.param("acc_lim_theta", acc_lim_theta_, 3.2);
+      private_nh.param("yaw_goal_tolerance", yaw_goal_tolerance_, 0.05);  //角速度误差
+      private_nh.param("xy_goal_tolerance", xy_goal_tolerance_, 0.10);    //线速度误差
+      private_nh.param("acc_lim_x", acc_lim_x_, 2.5);                     //线加速度阈值
+      private_nh.param("acc_lim_y", acc_lim_y_, 2.5);                     
+      private_nh.param("acc_lim_theta", acc_lim_theta_, 3.2);             //角加速度阈值
 
       private_nh.param("stop_time_buffer", stop_time_buffer, 0.2);
 
@@ -163,6 +165,7 @@ namespace base_local_planner {
       private_nh.param("sim_time", sim_time, 1.0);
       private_nh.param("sim_granularity", sim_granularity, 0.025);
       private_nh.param("angular_sim_granularity", angular_sim_granularity, sim_granularity);
+      //vx_samples,vtheta_samples是速度计算时在线速度和角速度范围内生成的样本数
       private_nh.param("vx_samples", vx_samples, 3);
       private_nh.param("vtheta_samples", vtheta_samples, 20);
 
@@ -303,21 +306,28 @@ namespace base_local_planner {
       delete world_model_;
   }
 
+  //该函数的作用是，机器人已达到目标附近，但姿态未达到要求，在调整姿态前，将机器人速度降至阈值以下。
+  //将下一步速度设置为当前速度以最大反向加速度在一个仿真周期sim_period_内降至的速度
+  //角速度同理，注意在计算中防止越过0界
   bool TrajectoryPlannerROS::stopWithAccLimits(const geometry_msgs::PoseStamped& global_pose, const geometry_msgs::PoseStamped& robot_vel, geometry_msgs::Twist& cmd_vel){
     //slow down with the maximum possible acceleration... we should really use the frequency that we're running at to determine what is feasible
     //but we'll use a tenth of a second to be consistent with the implementation of the local planner.
+    //x方向速度 = （当前X方向速度的符号）* max(0.0, 当前速度的绝对值-最大加速度*仿真周期)
     double vx = sign(robot_vel.pose.position.x) * std::max(0.0, (fabs(robot_vel.pose.position.x) - acc_lim_x_ * sim_period_));
     double vy = sign(robot_vel.pose.position.y) * std::max(0.0, (fabs(robot_vel.pose.position.y) - acc_lim_y_ * sim_period_));
-
+    
+    //角速度同上
     double vel_yaw = tf2::getYaw(robot_vel.pose.orientation);
     double vth = sign(vel_yaw) * std::max(0.0, (fabs(vel_yaw) - acc_lim_theta_ * sim_period_));
 
     //we do want to check whether or not the command is valid
+    //用上述计算出的速度、角速度、当前位姿，调用checkTrajectory()，检查速度命令是否合法
     double yaw = tf2::getYaw(global_pose.pose.orientation);
     bool valid_cmd = tc_->checkTrajectory(global_pose.pose.position.x, global_pose.pose.position.y, yaw,
         robot_vel.pose.position.x, robot_vel.pose.position.y, vel_yaw, vx, vy, vth);
 
     //if we have a valid command, we'll pass it on, otherwise we'll command all zeros
+    //上述计算如果合法，把速度存放到cmd_vel
     if(valid_cmd){
       ROS_DEBUG("Slowing down... using vx, vy, vth: %.2f, %.2f, %.2f", vx, vy, vth);
       cmd_vel.linear.x = vx;
@@ -333,33 +343,47 @@ namespace base_local_planner {
   }
 
   bool TrajectoryPlannerROS::rotateToGoal(const geometry_msgs::PoseStamped& global_pose, const geometry_msgs::PoseStamped& robot_vel, double goal_th, geometry_msgs::Twist& cmd_vel){
+    //计算得到当前位置的yaw角：tf::getYaw()
     double yaw = tf2::getYaw(global_pose.pose.orientation);
+    //获取当前的z轴角速度，其中robot_vel中的yaw存储了z轴角速度
     double vel_yaw = tf2::getYaw(robot_vel.pose.orientation);
     cmd_vel.linear.x = 0;
     cmd_vel.linear.y = 0;
+    //计算机器人当前角度与目标角度之间的偏差
     double ang_diff = angles::shortest_angular_distance(yaw, goal_th);
 
+    //在差值计算完成后，需要用几个条件对其进行限制；
+    //首先，最直接的限制是，下一步的角速度要在预先设置的角速度允许范围内
+    /*角速度范围，即计算用来生成采样的角速度（范围）*/
+    //若角度差值anf_diff为正：角速度 = min(最大角速度，max(最小角速度，角度差值))
+    //若角速度值anf_diff为负：角速度 = max(最小角速度，min(-1*最小角速度，角度差值))
     double v_theta_samp = ang_diff > 0.0 ? std::min(max_vel_th_,
         std::max(min_in_place_vel_th_, ang_diff)) : std::max(min_vel_th_,
         std::min(-1.0 * min_in_place_vel_th_, ang_diff));
 
     //take the acceleration limits of the robot into account
+    //由于角加速度有限制，需要保证角速度限制在：
+    //最大角速度 = 当前角速度 + 最大加速度*仿真周期
+    //最小角速度 = 当前角速度 - 最小角速度*仿真周期
     double max_acc_vel = fabs(vel_yaw) + acc_lim_theta_ * sim_period_;
     double min_acc_vel = fabs(vel_yaw) - acc_lim_theta_ * sim_period_;
 
     v_theta_samp = sign(v_theta_samp) * std::min(std::max(fabs(v_theta_samp), min_acc_vel), max_acc_vel);
 
+    //由v^2 = 2ax v需要小于根下2ax 机器人才能停下
     //we also want to make sure to send a velocity that allows us to stop when we reach the goal given our acceleration limits
     double max_speed_to_stop = sqrt(2 * acc_lim_theta_ * fabs(ang_diff)); 
 
     v_theta_samp = sign(v_theta_samp) * std::min(max_speed_to_stop, fabs(v_theta_samp));
 
     // Re-enforce min_in_place_vel_th_.  It is more important than the acceleration limits.
+    //重复第一步，再次用预设角速度值限制当前的角速度
     v_theta_samp = v_theta_samp > 0.0
       ? std::min( max_vel_th_, std::max( min_in_place_vel_th_, v_theta_samp ))
       : std::max( min_vel_th_, std::min( -1.0 * min_in_place_vel_th_, v_theta_samp ));
 
     //we still want to lay down the footprint of the robot and check if the action is legal
+    //与降速过程一样，检查合法性
     bool valid_cmd = tc_->checkTrajectory(global_pose.pose.position.x, global_pose.pose.position.y, yaw,
         robot_vel.pose.position.x, robot_vel.pose.position.y, vel_yaw, 0.0, 0.0, v_theta_samp);
 
@@ -375,6 +399,7 @@ namespace base_local_planner {
 
   }
 
+  //MoveBase通过调用该函数传入当前位置到目标点之间规划好的全局路径，与全局路径的贴合程度将作为局部规划路径的一个打分项
   bool TrajectoryPlannerROS::setPlan(const std::vector<geometry_msgs::PoseStamped>& orig_global_plan){
     if (! isInitialized()) {
       ROS_ERROR("This planner has not been initialized, please call initialize() before using this planner");
@@ -392,6 +417,14 @@ namespace base_local_planner {
     return true;
   }
 
+  // FIXME:
+  // 该函数在MoveBase的executeCycle函数中被调用，而executeCycle函数本身是循环执行的
+  // 所以该函数能够不断进行局部速度规划，从而获得连续的速度指令，控制机器人行动
+  // 该函数首先获取global系的当前位姿，它可以用来判断是否行进到目标点
+  // 并将全局规划结果global_plan_从地图坐标系转换到global系，得到transformed_plan
+  // 这里调用的transformGlobalPlan函数来自goal_function.cpp，这个文件中定义了一些辅助函数
+  // transformGlobalPlan函数除了通过tf完成坐标转换，还对转换后的路径点做了一些筛选处理，与主体关系不大
+  // 这样，得到了global系的当前位姿和全局规划transformed_plan
   bool TrajectoryPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel){
     if (! isInitialized()) {
       ROS_ERROR("This planner has not been initialized, please call initialize() before using this planner");
@@ -400,24 +433,29 @@ namespace base_local_planner {
 
     std::vector<geometry_msgs::PoseStamped> local_plan;
     geometry_msgs::PoseStamped global_pose;
+    //robot_base_frame --> global_frame
     if (!costmap_ros_->getRobotPose(global_pose)) {
       return false;
     }
 
     std::vector<geometry_msgs::PoseStamped> transformed_plan;
     //get the global plan in our frame
+    //global_plan从costmap左上角的坐标系转换到建图起始点/map坐标系下，当前单位是m
+    //将全局路径global_plan从/map坐标系转换到/global坐标系下，得到transformed_plan
     if (!transformGlobalPlan(*tf_, global_plan_, global_pose, *costmap_, global_frame_, transformed_plan)) {
       ROS_WARN("Could not transform the global plan to the frame of the controller");
       return false;
     }
 
     //now we'll prune the plan based on the position of the robot
+    //修剪功能，该功能是指在机器人前进过程中，将一定阈值之外的走过的路径点从global_plan_和transformed_plan去掉
     if(prune_plan_)
       prunePlan(global_pose, transformed_plan, global_plan_);
 
     geometry_msgs::PoseStamped drive_cmds;
     drive_cmds.header.frame_id = robot_base_frame_;
 
+    //机器人当前速度：通过订阅/odom话题，将订阅到的linear.x ==> position.x
     geometry_msgs::PoseStamped robot_vel;
     odom_helper_.getRobotVel(robot_vel);
 
@@ -428,9 +466,11 @@ namespace base_local_planner {
     */
 
     //if the global plan passed in is empty... we won't do anything
+    //如果全局规划为空则返回false
     if(transformed_plan.empty())
       return false;
 
+    //将global坐标系下的transformed_plan中的最后一个路径点，作为目标点。
     const geometry_msgs::PoseStamped& goal_point = transformed_plan.back();
     //we assume the global goal is the last point in the global plan
     const double goal_x = goal_point.pose.position.x;
@@ -441,6 +481,7 @@ namespace base_local_planner {
     double goal_th = yaw;
 
     //check to see if we've reached the goal position
+    //接下来判断机器人是否处于目标周围，误差范围内，若是，则进行接下来的判断
     if (xy_tolerance_latch_ || (getGoalPositionDistance(global_pose, goal_x, goal_y) <= xy_goal_tolerance_)) {
 
       //if the user wants to latch goal tolerance, if we ever reach the goal location, we'll
@@ -462,6 +503,8 @@ namespace base_local_planner {
       } else {
         //we need to call the next two lines to make sure that the trajectory
         //planner updates its path distance and goal distance grids
+        //若未达到姿态要求，调用TrajectoryPlanner类的findBestPath函数，该函数将完成局部规划的实际工作
+        //
         tc_->updatePlan(transformed_plan);
         Trajectory path = tc_->findBestPath(global_pose, robot_vel, drive_cmds);
         map_viz_.publishCostCloud(costmap_);
@@ -472,11 +515,14 @@ namespace base_local_planner {
 
         //if we're not stopped yet... we want to stop... taking into account the acceleration limits of the robot
         if ( ! rotating_to_goal_ && !base_local_planner::stopped(base_odom, rot_stopped_velocity_, trans_stopped_velocity_)) {
+          //如果进入该if则表示机器人目前没有停止，调用类内stopWithAccLimits函数，给机器人降速，直至降至一个极小值范围内
+          //表示机器人停止，然后跳出该层判断
           if ( ! stopWithAccLimits(global_pose, robot_vel, cmd_vel)) {
             return false;
           }
         }
         //if we're stopped... then we want to rotate to goal
+        //如果当前机器人已经停止了，调用类内rotateToGoal函数，让机器人旋转至目标姿态。
         else{
           //set this so that we know its OK to be moving
           rotating_to_goal_ = true;
@@ -494,6 +540,8 @@ namespace base_local_planner {
       return true;
     }
 
+    //如果没有到达目标“位置”，更新全局规划，调用findBestPath函数进行局部规划
+    //速度结果填充到drive_cmds，并得到局部路线path
     tc_->updatePlan(transformed_plan);
 
     //compute what trajectory to drive along
@@ -514,6 +562,7 @@ namespace base_local_planner {
     cmd_vel.angular.z = tf2::getYaw(drive_cmds.pose.orientation);
 
     //if we cannot move... tell someone
+    //判断path的代价值，若path为负，则证明是无效路径，返回false，若为正则说明是有效路径
     if (path.cost_ < 0) {
       ROS_DEBUG_NAMED("trajectory_planner_ros",
           "The rollout planner failed to find a valid plan. This means that the footprint of the robot was in collision for all simulated trajectories.");
@@ -527,6 +576,7 @@ namespace base_local_planner {
         cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z);
 
     // Fill out the local plan
+    // 填充本地的Local_plan，把path中的点存放到local_plan中
     for (unsigned int i = 0; i < path.getPointsSize(); ++i) {
       double p_x, p_y, p_th;
       path.getPoint(i, p_x, p_y, p_th);
@@ -543,6 +593,7 @@ namespace base_local_planner {
     }
 
     //publish information to the visualizer
+    //进行可视化
     publishPlan(transformed_plan, g_plan_pub_);
     publishPlan(local_plan, l_plan_pub_);
     return true;

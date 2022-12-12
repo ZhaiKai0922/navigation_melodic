@@ -183,6 +183,10 @@ namespace navfn {
       boost::mutex mutex_;
       ros::ServiceServer make_plan_srv_;
       std::string global_frame_;
+      //add：占据的次数
+      int num_occupy = 0;
+      //设定安全距离
+      double safe_distance_ = 0.9;
   };
 };
 

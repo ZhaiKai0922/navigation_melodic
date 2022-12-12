@@ -632,6 +632,7 @@ namespace move_base {
     // we have slept long enough for rate
     planner_cond_.notify_one();
   }
+  
   //global planner线程，负责全局的路径规划。
   void MoveBase::planThread(){
     ROS_DEBUG_NAMED("move_base_plan_thread","Starting planner thread...");
@@ -909,6 +910,7 @@ namespace move_base {
   {
     return hypot(p1.pose.position.x - p2.pose.position.x, p1.pose.position.y - p2.pose.position.y);
   }
+
   //跟随目标，完成返回true
   bool MoveBase::executeCycle(geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& global_plan){
     boost::recursive_mutex::scoped_lock ecl(configuration_mutex_);

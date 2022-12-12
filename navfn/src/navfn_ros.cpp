@@ -59,11 +59,14 @@ namespace navfn {
       //initialize the planner
       initialize(name, costmap, global_frame);
   }
+
   // /NavfnROS::initialize | 初始化
+  // move_base首先调用该函数进行初始化，传入costmap初始化NavFn类planner
   void NavfnROS::initialize(std::string name, costmap_2d::Costmap2D* costmap, std::string global_frame){
     if(!initialized_){
       costmap_ = costmap;
       global_frame_ = global_frame;
+      //指向NavFn类实例，传入参数为地图大小
       planner_ = boost::shared_ptr<NavFn>(new NavFn(costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY()));
 
       ros::NodeHandle private_nh("~/" + name);
@@ -192,9 +195,13 @@ namespace navfn {
 
   bool NavfnROS::makePlan(const geometry_msgs::PoseStamped& start, 
       const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan){
+    ROS_ERROR("NavfnROS::makePlan(), default_tolerance = %f", default_tolerance_);
     return makePlan(start, goal, default_tolerance_, plan);
   }
 
+  //TODO:
+  //该函数为Move_base对全局规划器调用的函数，它是NavfnROS类的重点函数，负责调用包括Navfn类成员函数完成实际计算
+  //控制着全局规划的整个流程，它的输入为当前和目标位置。
   bool NavfnROS::makePlan(const geometry_msgs::PoseStamped& start, 
       const geometry_msgs::PoseStamped& goal, double tolerance, std::vector<geometry_msgs::PoseStamped>& plan){
     boost::mutex::scoped_lock lock(mutex_);
@@ -221,9 +228,11 @@ namespace navfn {
       return false;
     }
 
+    //起始位姿wx、wy
     double wx = start.pose.position.x;
     double wy = start.pose.position.y;
 
+    //全局代价地图上的起始位姿，mx,my
     unsigned int mx, my;
     if(!costmap_->worldToMap(wx, wy, mx, my)){
       ROS_WARN("The robot's start position is off the global costmap. Planning will always fail, are you sure the robot has been properly localized?");
@@ -234,6 +243,8 @@ namespace navfn {
     clearRobotCell(start, mx, my);
 
     //make sure to resize the underlying array that Navfn uses
+    //planner指向的是NavFn类，这里调用它的setNavArr函数，主要作用是给定地图的大小，创建NavFn类中使用的costarr数组（记录全局costmap信息）
+    //potarr数组，存储各cell的potential值，以及x和y向的梯度，用于生成路径，这三个数组构成NavFn类用Dijkstra计算的主干。
     planner_->setNavArr(costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
     planner_->setCostmap(costmap_->getCharMap(), true, allow_unknown_);
 
@@ -253,6 +264,54 @@ namespace navfn {
       my = 0;
     }
 
+    //if(costmap_->getCost(mx, my) == costmap_2d::LETHAL_OBSTACLE || 
+       //costmap_->getCost(mx, my) == costmap_2d::INSCRIBED_INFLATED_OBSTACLE){
+    if(costmap_->getCost(mx, my) > 100){
+      int safe_cell = (int)(safe_distance_/costmap_->getResolution());
+
+      if(safe_cell < 1){
+        ROS_ERROR("The safety distace is too small !");
+        return false;
+      }
+
+      unsigned int x_min = (mx > safe_cell) ? mx-safe_cell : mx;
+      unsigned int x_max = ((mx + safe_cell) < costmap_->getSizeInCellsX()) ? mx+safe_cell : mx;
+      unsigned int y_min = (my > safe_cell) ? my-safe_cell : my;
+      unsigned int y_max = ((my + safe_cell) < costmap_->getSizeInCellsY()) ? my+safe_cell : my;
+
+      if(costmap_->getCost(mx, y_max) == 0){
+        my = y_max;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to UP !");
+      }else if(costmap_->getCost(mx, y_min) == 0){
+        my = y_min;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to DOWN !");
+      }else if(costmap_->getCost(x_min, my) == 0){
+        mx = x_min;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to LEFT !");
+      }else if(costmap_->getCost(x_max, my) == 0){
+        mx = x_max;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to RIGHT !");
+      }else if(costmap_->getCost(x_min, y_min) == 0){
+        mx = x_min;
+        my = y_min;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to LEFT DOWN !");
+      }else if(costmap_->getCost(x_max, y_min) == 0){
+        mx = x_max;
+        my = y_min;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to RIGHT DOWN !");
+      }else if(costmap_->getCost(x_min, y_max) == 0){
+        mx = x_min;
+        my = y_max;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to LEFT UP !");
+      }else if(costmap_->getCost(x_max, y_max) == 0){
+        mx = x_max;
+        my = y_max;
+        ROS_ERROR("The Target Point Is Occupied ! Change the target point to RIGHT UP !");
+      }else{
+        ROS_ERROR("The Target Point Is Occupied ! CANNOT Find GOAL !");
+      }
+    }
+
     int map_goal[2];
     map_goal[0] = mx;
     map_goal[1] = my;
@@ -263,20 +322,85 @@ namespace navfn {
     //bool success = planner_->calcNavFnAstar();
     planner_->calcNavFnDijkstra(true);
 
-    double resolution = costmap_->getResolution();
-    geometry_msgs::PoseStamped p, best_pose;
-    p = goal;
+    double new_goalx = 0.0;
+    double new_goaly = 0.0;
+    costmap_->mapToWorld(mx, my, new_goalx, new_goaly);
+    geometry_msgs::PoseStamped new_goal = goal;
+    new_goal.pose.position.x = new_goalx;
+    new_goal.pose.position.y = new_goaly;
+
+    //FIXME:
+    double resolution = 2*(costmap_->getResolution());
+    geometry_msgs::PoseStamped p, q, best_pose;
+    p = new_goal;
+    q = new_goal;
 
     bool found_legal = false;
     double best_sdist = DBL_MAX;
 
-    p.pose.position.y = goal.pose.position.y - tolerance;
+    //num_occupy：检测目标点占据次数，当占据次数达到6次时，进行上报操作
+    //当前planner_frequency为2.0，即每0.5s调用一次，这里设置为6次即检测时长为3s
+    if(getPointPotential(p.pose.position) == POT_HIGH){
+      num_occupy++;
+      if(num_occupy >= 6){
+        ROS_ERROR("=== The Target Point Is Occupied !===");
+        num_occupy = 0;
+      }
+    }else{
+      num_occupy = 0;
+    }
 
-    while(p.pose.position.y <= goal.pose.position.y + tolerance){
-      p.pose.position.x = goal.pose.position.x - tolerance;
-      while(p.pose.position.x <= goal.pose.position.x + tolerance){
+    p.pose.position.y = new_goal.pose.position.y - tolerance;
+    p.pose.position.x = new_goal.pose.position.y - tolerance;
+
+    // while(p.pose.position.y <= new_goal.pose.position.y + tolerance &&
+    //       p.pose.position.x <= new_goal.pose.position.x + tolerance){
+    //   double pwx = p.pose.position.x;
+    //   double pwy = p.pose.position.y;
+    //   unsigned int pmx;
+    //   unsigned int pmy;
+    //   costmap_->worldToMap(pwx, pwy, pmx, pmy);
+    //   double potential = getPointPotential(p.pose.position);
+    //   double sdist = sq_distance(p, new_goal);
+    //   //ROS_ERROR("point P :potential = %lf; sdist = %lf",potential, sdist);
+    //   if(potential < POT_HIGH && sdist < best_sdist){
+    //     //ROS_ERROR("point P :potential < POT_HIGH, ====> potential = %lf; sdist = %lf",potential, sdist);
+    //     best_sdist = sdist;
+    //     best_pose = p;
+    //     found_legal = true;
+    //   }
+    //   p.pose.position.x += resolution;
+    //   p.pose.position.y += resolution;
+    // }
+
+    // q.pose.position.x = new_goal.pose.position.x + tolerance;
+    // q.pose.position.y = new_goal.pose.position.y - tolerance;
+
+    // while(q.pose.position.y <= new_goal.pose.position.y + tolerance &&
+    //       q.pose.position.x >= new_goal.pose.position.x - tolerance){
+    //   double qwx = p.pose.position.x;
+    //   double qwy = p.pose.position.y;
+    //   unsigned int qmx;
+    //   unsigned int qmy;
+    //   costmap_->worldToMap(qwx, qwy, qmx, qmy);
+    //   double potential = getPointPotential(q.pose.position);
+    //   double sdist = sq_distance(q, new_goal);
+    //   //ROS_ERROR("point Q :potential = %lf; sdist = %lf",potential, sdist);
+    //   if(potential < POT_HIGH && sdist < best_sdist){
+    //     //ROS_ERROR("Point Q :potential < POT_HIGH, ====> potential = %lf; sdist = %lf",potential, sdist);
+    //     best_sdist = sdist;
+    //     best_pose = q;
+    //     found_legal = true;
+    //   }
+    //   q.pose.position.x -= resolution;
+    //   q.pose.position.y += resolution;
+    // }
+
+    while(p.pose.position.y <= new_goal.pose.position.y + tolerance){
+      p.pose.position.x = new_goal.pose.position.x - tolerance;
+      while(p.pose.position.x <= new_goal.pose.position.x + tolerance){
         double potential = getPointPotential(p.pose.position);
-        double sdist = sq_distance(p, goal);
+        double sdist = sq_distance(p, new_goal);
         if(potential < POT_HIGH && sdist < best_sdist){
           best_sdist = sdist;
           best_pose = p;
